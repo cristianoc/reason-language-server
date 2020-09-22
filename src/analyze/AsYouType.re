@@ -135,43 +135,8 @@ let isMl = (uri) =>Utils.endsWith(uri, "ml") || Utils.endsWith(uri, "mli");
 
 let getParsetree = (~cacheLocation, ~compilerVersion, ~moduleName, ~uri) => {
   let cmt = cmtPath(~cacheLocation, ~moduleName, ~uri);
-  (switch compilerVersion {
-    | BuildSystem.V402 => Process_402.astForCmt
-    | V406 => Process_406.astForCmt
-    | V407 => Process_407.astForCmt
-    | V408 => Process_408.astForCmt
-  })(cmt);
+  Process_406.astForCmt(cmt);
 };
-
-/* let getSource = (~cacheLocation, ~compilerVersion, ~moduleName, ~uri) => {
-  let%try parsetree = getParsetree(~cacheLocation, ~compilerVersion, ~moduleName, ~uri);
-  if (isMl(uri)) {
-    switch (parsetree) {
-      | `Implementation(str) => Pprintast.structure(Format.str_formatter, str)
-      | `Interface(int) => Pprintast.signature(Format.str_formatter, int)
-    };
-    Ok(Format.flush_str_formatter())
-  } else {
-    switch (parsetree) {
-      | `Implementation(str) =>
-        Reason_toolchain.RE.print_implementation(Format.str_formatter, structure);
-      | `Interface(int) =>
-      ()
-    };
-    Ok("")
-  }
-};
-
-let getAst = (~cacheLocation, ~compilerVersion, ~moduleName, ~uri) => {
-  let cmt = cmtPath(~cacheLocation, ~moduleName, ~uri);
-  /* (switch compilerVersion {
-    | BuildSystem.V402 => Process_402.astForCmt
-    | V406 => Process_406.astForCmt
-    | V407 => Process_407.astForCmt
-    | V408 => Process_408.astForCmt
-  })(cmt); */
-  Ok("NVM")
-}; */
 
 let process = (~uri, ~moduleName, ~basePath, ~reasonFormat, text, ~cacheLocation, ~compilerVersion, ~allLocations, compilerPath, refmtPath, includes, flags) => {
   let interface = Utils.endsWith(uri, "i");
@@ -189,12 +154,7 @@ let process = (~uri, ~moduleName, ~basePath, ~reasonFormat, text, ~cacheLocation
       Ok((None, astFile))
     }
   };
-  let fullForCmt = (switch compilerVersion {
-    | BuildSystem.V402 => Process_402.fullForCmt
-    | V406 => Process_406.fullForCmt
-    | V407 => Process_407.fullForCmt
-    | V408 => Process_408.fullForCmt
-  })(~moduleName, ~allLocations);
+  let fullForCmt = Process_406.fullForCmt(~moduleName, ~allLocations);
   let cmtPath = cacheLocation /+ moduleName ++ ".cmt" ++ (interface ? "i" : "");
   try (Unix.unlink(cmtPath)) { | _ => ()};
   switch (runBsc(~basePath, ~interface, ~reasonFormat, ~command="-c", compilerPath, astFile, includes, flags)) {

@@ -2,11 +2,11 @@ let digConstructor = (~env, ~getModule, path) => {
   switch (Query.resolveFromCompilerPath(~env, ~getModule, path)) {
   | `Not_found => None
   | `Stamp(stamp) =>
-    let%opt t = Query.hashFind(env.file.stamps.types, stamp);
+    let%opt t = Hashtbl.find_opt(env.file.stamps.types, stamp);
     Some((env, t));
   | `Exported(env, name) =>
-    let%opt stamp = Query.hashFind(env.exported.types, name);
-    let%opt t = Query.hashFind(env.file.stamps.types, stamp);
+    let%opt stamp = Hashtbl.find_opt(env.exported.types, name);
+    let%opt t = Hashtbl.find_opt(env.file.stamps.types, stamp);
     Some((env, t));
   | _ => None
   }
@@ -19,14 +19,14 @@ let showModuleTopLevel = (~name, ~markdown, topLevel: list(SharedTypes.declared(
          switch (item.contents) {
          /** TODO pretty print module contents */
          | Module(_) => "  module " ++ item.name.txt ++ ";"
-         | Type({typ}) =>
+         | Type({decl}) =>
            "  "
-           ++ (typ.declToString(item.name.txt))
-         | Value({typ}) =>
+           ++ (decl |> Shared.declToString(item.name.txt))
+         | Value(typ) =>
            "  let "
            ++ item.name.txt
            ++ ": "
-           ++ (typ.toString()) /* TODO indent */
+           ++ (typ |> Shared.typeToString) /* TODO indent */
            ++ ";"
          | ModuleType(_) => "  module type " ++ item.name.txt ++ ";"
          }
@@ -54,7 +54,7 @@ let newHover = (~rootUri, ~file: SharedTypes.file, ~getModule, ~markdown, ~showP
     | Open => Some("an open")
     | TypeDefinition(_name, _tdecl, _stamp) => None
     | Module(LocalReference(stamp, _tip)) => {
-      let%opt md = Query.hashFind(file.stamps.modules, stamp);
+      let%opt md = Hashtbl.find_opt(file.stamps.modules, stamp);
       let%opt (file, declared) = References.resolveModuleReference(~file, ~getModule, md);
       let name = switch declared {
         | Some(d) => d.name.txt
@@ -67,7 +67,7 @@ let newHover = (~rootUri, ~file: SharedTypes.file, ~getModule, ~markdown, ~showP
       let env = {Query.file, exported: file.contents.exported};
       let%opt (env, name) = Query.resolvePath(~env, ~path, ~getModule);
       let%opt stamp = Query.exportedForTip(~env, name, tip);
-      let%opt md = Query.hashFind(file.stamps.modules, stamp);
+      let%opt md = Hashtbl.find_opt(file.stamps.modules, stamp);
       let%opt (file, declared) = References.resolveModuleReference(~file, ~getModule, md);
       let name = switch declared {
         | Some(d) => d.name.txt
@@ -93,12 +93,12 @@ let newHover = (~rootUri, ~file: SharedTypes.file, ~getModule, ~markdown, ~showP
       })
     }
     | Typed(t, _) => {
-      let typeString = t.toString();
+      let typeString = t |> Shared.typeToString;
       let extraTypeInfo = {
         let env = {Query.file, exported: file.contents.exported};
-        let%opt (path, _args) = t.getConstructorPath();
-        let%opt (_env, {name: {txt}, contents: {typ}}) = digConstructor(~env, ~getModule, path);
-        Some(typ.declToString(txt))
+        let%opt path = t |> Shared.digConstructor;
+        let%opt (_env, {name: {txt}, contents: {decl}}) = digConstructor(~env, ~getModule, path);
+        Some(decl |> Shared.declToString(txt))
         /* TODO type declaration */
         /* None */
         /* Some(typ.toString()) */
@@ -130,7 +130,7 @@ let newHover = (~rootUri, ~file: SharedTypes.file, ~getModule, ~markdown, ~showP
             [Some(typeString),
             Some(codeBlock(txt ++ "(" ++ (args |. Belt.List.map(((t, _)) => {
               let typeString =
-                t.toString();
+                t |> Shared.typeToString;
               typeString
 
             }) |> String.concat(", ")) ++ ")")),

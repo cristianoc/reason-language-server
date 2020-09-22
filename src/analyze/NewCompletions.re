@@ -5,9 +5,9 @@ let showConstructor = ({SharedTypes.Type.Constructor.name: {txt}, args, res}) =>
   txt ++ (args == []
     ? ""
     : "(" ++ String.concat(", ", args |. Belt.List.map(((typ, _)) => (
-      typ.toString()
+      typ |> Shared.typeToString
     ))) ++ ")")
-  ++ ((res |?>> typ => "\n" ++ typ.toString()) |? "")
+  ++ ((res |?>> typ => "\n" ++ (typ |> Shared.typeToString)) |? "")
 };
 
 let rec pathOfModuleOpen = items =>
@@ -259,7 +259,7 @@ let getEnvWithOpens =
 
 type k =
   | Module(Module.kind)
-  | Value(Value.t)
+  | Value(Types.type_expr)
   | Type(Type.t)
   | ModuleType(Module.kind)
   | Constructor(Type.Constructor.t, declared(Type.t))
@@ -279,10 +279,10 @@ let kindToInt = k =>
 
 let detail = (name, contents) =>
   switch (contents) {
-  | Type({typ}) =>
-    typ.declToString(name)
-  | Value({typ}) =>
-    typ.toString()
+  | Type({decl}) =>
+    decl |> Shared.declToString(name)
+  | Value(typ) =>
+    typ |> Shared.typeToString
   | Module(_) => "module"
   | ModuleType(_) => "module type"
   | FileModule(_) => "file module"
@@ -290,17 +290,17 @@ let detail = (name, contents) =>
     name
     ++ ": "
     ++ (
-      typ.toString()
+      typ |> Shared.typeToString
     )
     ++ "\n\n"
     ++ (
-      t.contents.typ.declToString(t.name.txt)
+      t.contents.decl |> Shared.declToString(t.name.txt)
     )
   | Constructor(c, t) =>
   showConstructor(c)
     ++ "\n\n"
     ++ (
-      t.contents.typ.declToString(t.name.txt)
+      t.contents.decl |> Shared.declToString(t.name.txt)
     )
   };
 
@@ -462,9 +462,9 @@ TODO filter out things that are defined after the current position
 
 */
 
-let resolveRawOpens = (~useStdlib, ~env, ~getModule, ~rawOpens, ~package) => {
+let resolveRawOpens = (~env, ~getModule, ~rawOpens, ~package) => {
   // TODO Stdlib instead of Pervasives
-  let packageOpens = [useStdlib ? "Stdlib" : "Pervasives", ...package.TopTypes.opens];
+  let packageOpens = ["Pervasives", ...package.TopTypes.opens];
   Log.log("Package opens " ++ String.concat(" ", packageOpens));
 
   let opens =
@@ -487,8 +487,7 @@ let resolveRawOpens = (~useStdlib, ~env, ~getModule, ~rawOpens, ~package) => {
 /** This function should live somewhere else */
 let findDeclaredValue =
     (
-      ~useStdlib=false,
-      ~full,
+      ~file,
       ~package,
       /* the text that we found e.g. open A.B.C, this is "A.B.C" */
       ~rawOpens,
@@ -496,21 +495,21 @@ let findDeclaredValue =
       pos,
       tokenParts,
     ) => {
-  let env = Query.fileEnv(full.file);
+  let env = Query.fileEnv(file);
 
-  let opens = resolveRawOpens(~useStdlib, ~env, ~getModule, ~rawOpens, ~package);
+  let opens = resolveRawOpens(~env, ~getModule, ~rawOpens, ~package);
 
   let path = pathFromTokenParts(tokenParts);
 
   let%opt (env, suffix) = getEnvWithOpens(~pos, ~env, ~getModule, ~opens, path);
 
-  let%opt stamp = Utils.maybeHash(env.exported.values, suffix);
-  Utils.maybeHash(env.file.stamps.values, stamp);
+  let%opt stamp = Hashtbl.find_opt(env.exported.values, suffix);
+  Hashtbl.find_opt(env.file.stamps.values, stamp);
 };
 
 
 let get =
-    (~useStdlib=false, ~full, ~package, ~rawOpens, ~getModule, ~allModules, pos, tokenParts) => {
+    (~full, ~package, ~rawOpens, ~getModule, ~allModules, pos, tokenParts) => {
   Log.log(
     "Opens folkz > "
     ++ string_of_int(List.length(rawOpens))
@@ -522,7 +521,7 @@ let get =
   let packageOpens = ["Pervasives", ...package.TopTypes.opens];
   Log.log("Package opens " ++ String.concat(" ", packageOpens));
 
-  let opens = resolveRawOpens(~useStdlib, ~env, ~getModule, ~rawOpens, ~package);
+  let opens = resolveRawOpens(~env, ~getModule, ~rawOpens, ~package);
   Log.log(
     "Opens nows "
     ++ string_of_int(List.length(opens))
@@ -592,7 +591,7 @@ let get =
           let%opt declared =
             Query.findInScope(pos, first, env.file.stamps.values);
           Log.log("Found it! " ++ declared.name.txt);
-          let%opt (path, _args) = declared.contents.typ.getConstructorPath();
+          let%opt path = declared.contents |> Shared.digConstructor;
           let%opt (env, typ) =
             Hover.digConstructor(~env, ~getModule, path);
           let%opt (env, typ) =
@@ -606,7 +605,7 @@ let get =
                   let%opt attr =
                     attributes |. Belt.List.getBy(a => a.name.txt == name);
                   Log.log("Found attr " ++ name);
-                  let%opt (path, _args) = attr.typ.getConstructorPath();
+                  let%opt path = attr.typ |> Shared.digConstructor;
                   Hover.digConstructor(~env, ~getModule, path);
                 | _ => None
                 };

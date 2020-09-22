@@ -7,7 +7,7 @@ Files.mkdirp(tmp);
 
 let compilerForProjectDir = (projectDir) => {
   let%try buildSystem = BuildSystem.detectFull(projectDir);
-  let%try compilerPath = BuildSystem.getCompiler(projectDir, buildSystem);
+  let%try compilerPath = BuildSystem.getCompiler(projectDir);
   let%try_wrap compilerVersion = BuildSystem.getCompilerVersion(compilerPath);
   (buildSystem, compilerPath, compilerVersion)
 }
@@ -106,7 +106,6 @@ let getState = () => {
     compiledDocuments: Hashtbl.create(10),
     lastDefinitions: Hashtbl.create(10),
     settings: {
-      crossFileAsYouType: false,
       mlfmtLocation: None,
       refmtLocation: None,
       lispRefmtLocation: None,
@@ -118,7 +117,6 @@ let getState = () => {
       showModulePathOnHover: false,
       recordAllLocations: false,
       autoRebuild: false,
-      buildSystemOverrideByRoot: [],
     },
   };
 };
@@ -137,7 +135,7 @@ let makeFilesList = files => {
   let normals = files |. List.keepMap(((name, _)) => {
     let mname = Filename.chop_extension(name);
     if (!Filename.check_suffix(name, "i")) {
-      let intf = Utils.maybeHash(interfaces, mname);
+      let intf = Hashtbl.find_opt(interfaces, mname);
       Hashtbl.remove(interfaces, mname);
       Some((mname, switch intf {
         | None => SharedTypes.Impl(cmtBase ++ mname ++ ".cmt", Some(srcBase ++ name))

@@ -16,21 +16,18 @@ let getPackage = Packages.getPackage(~reportDiagnostics=NotificationHandlers.rep
 
 let handlers: list((string, (state, Json.t) => result((state, Json.t), string))) = [
   ("textDocument/definition", (state, params) => {
-    open InfixResult;
-    let%try uri = params |> RJson.get("textDocument") |?> RJson.get("uri") |?> RJson.string;
-    let%try position = RJson.get("position", params) |?> Protocol.rgetPosition;
+    let%try (uri, pos) = Protocol.rPositionParams(params);
     let%try package = getPackage(uri, state);
-    let%try data = State.getDefinitionData(uri, state, ~package);
+    let%try (file, extra) = State.fileForUri(state, ~package, uri);
 
-    let position = Utils.cmtLocFromVscode(position);
+    let position = Utils.cmtLocFromVscode(pos);
 
-    open Infix;
     {
       let%opt (uri, loc) =
         References.definitionForPos(
           ~pathsForModule=package.pathsForModule,
-          ~file=data.file,
-          ~extra=data.extra,
+          ~file,
+          ~extra,
           ~getUri=State.fileForUri(state, ~package),
           ~getModule=State.fileForModule(state, ~package),
           position,
@@ -47,8 +44,7 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
     let%try (text, _version, _isClean) = maybeHash(state.documentText, uri) |> orError("No document text found");
     let%try package = getPackage(uri, state);
     let%try offset = PartialParser.positionToOffset(text, position) |> orError("invalid offset");
-    let%try full = State.getDefinitionData(uri, state, ~package);
-    let {SharedTypes.file, extra} = full;
+    let%try (file, extra) = uri |> State.fileForUri(state, ~package);
 
     {
       let%opt (commas, _labelsUsed, lident, i) = PartialParser.findFunctionCall(text, offset - 1);
@@ -61,15 +57,14 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
           let tokenParts = Utils.split_on_char('.', lident);
           let rawOpens = PartialParser.findOpens(text, offset);
           let%opt declared = NewCompletions.findDeclaredValue(
-            ~useStdlib=package.compilerVersion->BuildSystem.usesStdlib,
-            ~full,
+            ~file,
             ~package,
             ~rawOpens,
             ~getModule=State.fileForModule(state, ~package),
             pos,
             tokenParts
           );
-          let typ = declared.contents.typ;
+          let typ = declared.contents;
           Some((typ, declared.docstring |? "No docs"))
         | Some((_, loc)) =>
           let%opt typ =
@@ -91,9 +86,9 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
       };
       Log.log("Found a type signature");
       /* BuildSystem.BsbNative() */
-      let (args, _rest) = typ.getArguments();
+      let args = typ |> Shared.getArguments;
       let%opt args = args == [] ? None : Some(args);
-      let printedType = typ.toString();
+      let printedType = typ |> Shared.typeToString;
       open Util.JsonShort;
       Some(Ok((state, o([
         ("activeParameter", i(commas)),
@@ -107,7 +102,7 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
             ("parameters", l(args |. List.map(((label, argt)) => {
               o([
                 ("label", s(label)),
-                ("documentation", s(argt.toString()))
+                ("documentation", s(argt |> Shared.typeToString))
               ])
             })))
           ])
@@ -143,7 +138,6 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
       let%try {SharedTypes.file, extra} = State.getBestDefinitions(uri, state, ~package);
       let allModules = package.localModules @ package.dependencyModules;
       let items = NewCompletions.get(
-        ~useStdlib=package.compilerVersion->BuildSystem.usesStdlib,
         ~full={file, extra},
         ~package,
         ~rawOpens,
@@ -330,7 +324,7 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
               | [{SharedTypes.name: {loc}, contents}, ... tlp] => {
                 let currentCl =
                   switch (contents) {
-                  | SharedTypes.Module.Value({typ}) => [(typ.toString(), loc)]
+                  | SharedTypes.Module.Value(typ) => [(typ |> Shared.typeToString, loc)]
                   | Module(Structure({topLevel})) => getTypeLensTopLevel(topLevel)
                   | _ => []
                   };
@@ -513,11 +507,11 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
     let rec getItems = ({Module.topLevel}) => {
       let fn = ({name: {txt}, extentLoc, contents}) => {
         let (item, siblings) = switch contents {
-          | Module.Value(v) => (v.typ.variableKind, [])
-          | Type(t) => (t.typ.declarationKind, [])
-          | Module(Structure(contents)) => (`Module, getItems(contents))
-          | Module(Ident(_)) => (`Module, [])
-          | ModuleType(_) => (`ModuleType, [])
+          | Module.Value(v) => (v |> Shared.variableKind, [])
+          | Type(t) => (t.decl |> Shared.declarationKind, [])
+          | Module(Structure(contents)) => (Module, getItems(contents))
+          | Module(Ident(_)) => (Module, [])
+          | ModuleType(_) => (ModuleType, [])
         };
         if (extentLoc.loc_ghost) {
           siblings
@@ -583,9 +577,9 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
             | File(_, _) => Some(())
             | _ => None
           };
-          let text = "let " ++ declared.name.txt ++ ": " ++ t.toString();
+          let text = "let " ++ declared.name.txt ++ ": " ++ (t |> Shared.typeToString);
           Some(text)
-        | TypeDefinition(name, decl, _) => Some(decl.declToString(name))
+        | TypeDefinition(name, decl, _) => Some(decl |> Shared.declToString(name))
         | _ => None
       };
 
@@ -613,7 +607,7 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
               let%try path = Utils.parseUri(uri) |> RResult.orError("Invalid uri");
               let interfacePath = path ++ "i";
               let interfaceUri = uri ++ "i";
-              switch (Query.hashFind(state.documentText, interfaceUri)) {
+              switch (Hashtbl.find_opt(state.documentText, interfaceUri)) {
                 | None =>
                   let text = switch (Files.readFileResult(interfacePath)) {
                     | Ok(text) => text
@@ -686,7 +680,7 @@ let handlers: list((string, (state, Json.t) => result((state, Json.t), string)))
         | `Interface(int) => Pprintast.signature(Format.str_formatter, int)
       };
     } else {
-      let module Convert = Migrate_parsetree.Convert(Migrate_parsetree.OCaml_408, Migrate_parsetree.OCaml_404);
+      let module Convert = Migrate_parsetree.Convert(Migrate_parsetree.OCaml_406, Migrate_parsetree.OCaml_408);
       switch (parsetree) {
       | `Implementation(str) =>
         Reason_toolchain.RE.print_implementation_with_comments(

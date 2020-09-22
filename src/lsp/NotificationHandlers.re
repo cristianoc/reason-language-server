@@ -105,17 +105,8 @@ let notificationHandlers: list((string, (state, Json.t) => result(state, string)
     let opensCodelens = (settings |?> Json.get("opens_codelens") |?> Json.bool) |? true;
     let dependenciesCodelens = (settings |?> Json.get("dependencies_codelens") |?> Json.bool) |? true;
     let formatWidth = (settings |?> Json.get("format_width") |?> Json.number) |?>> int_of_float;
-    /* let crossFileAsYouType = (settings |?> Json.get("cross_file_as_you_type") |?> Json.bool) |? false; */
-    /* Disabling this -- too finnicky :/ */
-    let crossFileAsYouType = false;
     let showModulePathOnHover = (settings |?> Json.get("show_module_path_on_hover") |?> Json.bool) |? true;
     let autoRebuild = settings |?> Json.get("autoRebuild") |?> Json.bool |? true;
-
-    let buildSystemOverrideByRoot = (settings |?> Json.get("build_system_override_by_root") |?> Json.obj |? [])->Belt.List.keepMap(((key, v)) => {
-      let%opt v = Json.string(v);
-      let%opt system = Analyze.BuildSystem.fromString(v);
-      Some((key, system))
-    });
 
     Ok({
       ...state,
@@ -128,10 +119,8 @@ let notificationHandlers: list((string, (state, Json.t) => result(state, string)
         opensCodelens,
         formatWidth,
         dependenciesCodelens,
-        crossFileAsYouType,
         showModulePathOnHover,
         autoRebuild,
-        buildSystemOverrideByRoot,
       },
     });
   }),
@@ -142,10 +131,10 @@ let notificationHandlers: list((string, (state, Json.t) => result(state, string)
     setPackageTimer(package);
     let moduleName = FindFiles.getName(uri);
     package.localModules |. Belt.List.forEach((mname) => {
-      let%opt_consume paths = Utils.maybeHash(package.pathsForModule, mname);
+      let%opt_consume paths = Hashtbl.find_opt(package.pathsForModule, mname);
       let%opt_consume src = SharedTypes.getSrc(paths);
       let otherUri = Utils.toUri(src);
-      let refs = Query.hashFind(package.interModuleDependencies, mname);
+      let refs = Hashtbl.find_opt(package.interModuleDependencies, mname);
       open Infix;
       if (mname != moduleName
           && (
@@ -192,9 +181,7 @@ let notificationHandlers: list((string, (state, Json.t) => result(state, string)
     let shouldReload = Belt.List.some(changes, change => {
       let%try uri = RJson.get("uri", change) |?> RJson.string;
       let isRelevant =
-        Utils.endsWith(uri, "/bsconfig.json") ||
-        Utils.endsWith(uri, "/jbuild") ||
-        Utils.endsWith(uri, "/dune");
+        Utils.endsWith(uri, "/bsconfig.json");
       if (!isRelevant) {
         Ok(false)
       } else {

@@ -1,113 +1,5 @@
 
-type kinds = [ `Function | `Array | `Variable | `Object | `Null | `EnumMember | `Module | `Enum | `Interface | `TypeParameter | `ModuleType ];
-
-module SimpleType = {
-
-  type expr('source) =
-    | Variable(string)
-    | AnonVariable
-    | RowVariant(list((string, option(expr('source)))), bool)
-    | Reference('source, list(expr('source)))
-    | Tuple(list(expr('source)))
-    | Fn(list((option(string), expr('source))), expr('source))
-    | Other
-
-  type body('source) =
-    | Open
-    | Abstract
-    | Expr(expr('source))
-    | Record(list((string, expr('source))))
-    | Variant(list((string, list(expr('source)), option(expr('source)))))
-
-  type declaration('source) = {
-    name: string,
-    variables: list(expr('source)),
-    body: body('source)
-  };
-
-  let rec usedSourcesExpr = exp => switch exp {
-    | Tuple(items) => items->Belt.List.map(usedSourcesExpr)->List.concat
-    | Reference(source, args) => [source, ...args->Belt.List.map(usedSourcesExpr)->List.concat]
-    | Fn(args, res) => args->Belt.List.map(snd)->Belt.List.map(usedSourcesExpr)->List.concat @ usedSourcesExpr(res)
-    | RowVariant(rows, _) => rows->Belt.List.keepMap(snd)->Belt.List.map(usedSourcesExpr)->List.concat
-    | Variable(_) | AnonVariable | Other => []
-  };
-
-  let usedSources = decl => switch (decl.body) {
-    | Expr(exp) => usedSourcesExpr(exp)
-    | Record(items) => items->Belt.List.map(snd)->Belt.List.map(usedSourcesExpr)->List.concat
-    | Variant(items) => items->Belt.List.map(((_, items, res)) =>
-      items->Belt.List.map(usedSourcesExpr)->List.concat @ switch res {
-        | None => []
-        | Some(res) => usedSourcesExpr(res)
-      }
-    )->List.concat
-    | Open | Abstract => []
-  };
-
-  let rec cmp: 'a 'b . (('a, 'b) => bool, expr('a), expr('b)) => bool = (compareSources, one, two) => switch (one, two) {
-    | (Variable(one), Variable(two)) => one == two
-    | (AnonVariable, AnonVariable) => true
-    | (Reference(sone, argsOne), Reference(stwo, argsTwo)) =>
-      compareSources(sone, stwo) && List.length(argsOne) == List.length(argsTwo)
-      && Belt.List.every2(argsOne, argsTwo, cmp(compareSources))
-    | (Tuple(one), Tuple(two)) => List.length(one) == List.length(two) && Belt.List.every2(one, two, cmp(compareSources))
-    | (Fn(args1, body1), Fn(args2, body2)) =>
-      cmp(compareSources, body1, body2) &&
-      List.length(args1) == List.length(args2) &&
-      Belt.List.every2(args1, args2, ((l1, t1), (l2, t2)) => l1 == l2 && cmp(compareSources, t1, t2))
-    | _ => false
-  };
-
-  let rec mapSource = (fn, expr) => switch expr {
-    | Variable(s) => Variable(s)
-    | AnonVariable => AnonVariable
-    | Reference(s, args) => Reference(fn(s), args->Belt.List.map(mapSource(fn)))
-    | Tuple(items) => Tuple(items->Belt.List.map(mapSource(fn)))
-    | Fn(args, res) => Fn(args->Belt.List.map(
-      ((label, arg)) => (label, mapSource(fn, arg))
-    ), mapSource(fn, res))
-    | RowVariant(rows, closed) => RowVariant(
-      rows->Belt.List.map(((label, expr)) => (label, switch expr {
-        | None => None
-        | Some(expr) => Some(mapSource(fn, expr))
-      })),
-      closed
-    )
-    | Other => Other
-  };
-
-  let declMapSource = (fn, decl) => {
-    name: decl.name,
-    variables: decl.variables->Belt.List.map(mapSource(fn)),
-    body: switch (decl.body) {
-      | Open => Open
-      | Abstract => Abstract
-      | Expr(expr) => Expr(mapSource(fn, expr))
-      | Record(items) => Record(items->Belt.List.map(((label, arg)) => (label, mapSource(fn, arg))))
-      | Variant(constructors) => Variant(constructors->Belt.List.map(((name, args, result)) =>
-        (name, args->Belt.List.map(mapSource(fn)), switch result {
-          | None => None
-          | Some(result) => Some(mapSource(fn, result))
-        })))
-    }
-  };
-};
-
-type flexibleType = {
-  toString: unit => string,
-  variableKind: kinds,
-  getConstructorPath: unit => option((Path.t, list(flexibleType))),
-  getArguments: unit => (list((string, flexibleType)), flexibleType),
-  asSimpleType: unit => SimpleType.expr(Path.t),
-};
-
-type flexibleDeclaration = {
-  declToString: string => string,
-  declarationKind: kinds,
-  asSimpleDeclaration: string => SimpleType.declaration(Path.t),
-  migrateAttributes: unit => Parsetree.attributes,
-};
+type kinds = | Function | Array | Variable | Object | Null | EnumMember | Module | Enum | Interface | TypeParameter | ModuleType;
 
 type filePath = string
 type paths =
@@ -181,7 +73,7 @@ module Type = {
     type t = {
       stamp: int,
       name: Location.loc(string),
-      typ: flexibleType,
+      typ: Types.type_expr,
       typLoc: Location.t,
     };
   };
@@ -190,29 +82,22 @@ module Type = {
     type t = {
       stamp: int,
       name: Location.loc(string),
-      args: list((flexibleType, Location.t)),
-      res: option(flexibleType),
+      args: list((Types.type_expr, Location.t)),
+      res: option(Types.type_expr),
     };
   };
 
   type kind =
-  | Abstract(option((Path.t, list(flexibleType))))
+  | Abstract(option((Path.t, list(Types.type_expr))))
   | Open
-  | Tuple(list(flexibleType))
+  | Tuple(list(Types.type_expr))
   | Record(list(Attribute.t))
   | Variant(list(Constructor.t))
   ;
   type t = {
     kind,
-    params: list((flexibleType, Location.t)),
-    typ: flexibleDeclaration,
-  };
-};
-
-module Value = {
-  type t = {
-    typ: flexibleType,
-    recursive: bool,
+    params: list((Types.type_expr, Location.t)),
+    decl: Types.type_declaration,
   };
 };
 
@@ -257,7 +142,7 @@ module Module = {
     /* constructors: Hashtbl.create(10), */
   };
   type item =
-  | Value(Value.t)
+  | Value(Types.type_expr)
   | Type(Type.t)
   | Module(kind)
   | ModuleType(kind)
@@ -274,7 +159,7 @@ type stampMap('t) = Hashtbl.t(int, 't);
 
 type stamps = {
   types: stampMap(declared(Type.t)),
-  values: stampMap(declared(Value.t)),
+  values: stampMap(declared(Types.type_expr)),
   modules: stampMap(declared(Module.kind)),
   moduleTypes: stampMap(declared(Module.kind)),
   constructors: stampMap(declared(Type.Constructor.t)),
@@ -355,11 +240,11 @@ module Loc = {
     | NotFound => "NotFound"
   };
   type t =
-  | Typed(flexibleType, typed)
+  | Typed(Types.type_expr, typed)
   | Constant(Asttypes.constant)
   | Module(typed)
   | TopLevelModule(string)
-  | TypeDefinition(string, flexibleDeclaration, int)
+  | TypeDefinition(string, Types.type_declaration, int)
   | Explanation(string)
   | Open;
 };

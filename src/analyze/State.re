@@ -41,71 +41,15 @@ let converter = (src, usePlainText) => {
 
 let newDocsForCmt = (~compilerVersion, ~moduleName, cmtCache, changed, cmt, src, clientNeedsPlainText) => {
   let uri = Utils.toUri(src |? cmt);
-  let%opt file = (switch compilerVersion {
-    | BuildSystem.V402 => Process_402.fileForCmt
-    | V406 => Process_406.fileForCmt
-    | V407 => Process_407.fileForCmt
-    | V408 => Process_408.fileForCmt
-  })(~moduleName, cmt, uri, converter(src, clientNeedsPlainText)) |> RResult.toOptionAndLog;
+  let%opt file = Process_406.fileForCmt(~moduleName, cmt, uri, converter(src, clientNeedsPlainText)) |> RResult.toOptionAndLog;
   Hashtbl.replace(cmtCache, cmt, (changed, file));
-  Some(file);
-};
-
-let newDocsForCmi = (~compilerVersion, ~moduleName, cmiCache, changed, cmi, src, clientNeedsPlainText) => {
-  let%opt file = (switch compilerVersion {
-    | BuildSystem.V402 => Process_402.fileForCmi
-    | V406 => Process_406.fileForCmi
-    | V407 => Process_407.fileForCmi
-    | V408 => Process_408.fileForCmi
-  })(~moduleName, cmi, Utils.toUri(src |? cmi), converter(src, clientNeedsPlainText));
-  Hashtbl.replace(cmiCache, cmi, (changed, file));
   Some(file);
 };
 
 let hasProcessedCmt = (state, cmt) => Hashtbl.mem(state.cmtCache, cmt);
 
 let docsForCmt = (~package, ~moduleName, cmt, src, state) =>
-  if (Filename.check_suffix(cmt, ".cmi")) {
-    if (Hashtbl.mem(state.cmiCache, cmt)) {
-      let (mtime, docs) = Hashtbl.find(state.cmiCache, cmt);
-      /* TODO I should really throttle this mtime checking to like every 50 ms or so */
-      switch (Files.getMtime(cmt)) {
-      | None =>
-        Log.log("⚠️ cannot get docs for nonexistant cmi " ++ cmt);
-        None;
-      | Some(changed) =>
-        if (changed > mtime) {
-          newDocsForCmi(
-            ~compilerVersion=package.compilerVersion,
-            ~moduleName,
-            state.cmiCache,
-            changed,
-            cmt,
-            src,
-            state.settings.clientNeedsPlainText,
-          );
-        } else {
-          Some(docs);
-        }
-      };
-    } else {
-      switch (Files.getMtime(cmt)) {
-      | None =>
-        Log.log("⚠️ cannot get docs for nonexistant cmi " ++ cmt);
-        None;
-      | Some(changed) =>
-        newDocsForCmi(
-          ~compilerVersion=package.compilerVersion,
-          ~moduleName,
-          state.cmiCache,
-          changed,
-          cmt,
-          src,
-          state.settings.clientNeedsPlainText,
-        )
-      };
-    };
-  } else if (Hashtbl.mem(state.cmtCache, cmt)) {
+ if (Hashtbl.mem(state.cmtCache, cmt)) {
     let (mtime, docs) = Hashtbl.find(state.cmtCache, cmt);
     /* TODO I should really throttle this mtime checking to like every 50 ms or so */
     switch (Files.getMtime(cmt)) {
@@ -220,23 +164,20 @@ let getInterfaceFile = (uri, state, ~package: TopTypes.package) => {
     let path = Utils.parseUri(uri) |! "not a uri: " ++ uri;
     Files.readFileExn(path)
   };
-  let%try moduleName = switch (Utils.maybeHash(package.nameForPath, path)) {
+  let%try moduleName = switch (Hashtbl.find_opt(package.nameForPath, path)) {
     | None =>
       Hashtbl.iter((k, v) => Log.log("Path: " ++ k ++ "  " ++ v), package.nameForPath);
       Log.log("Can't find " ++ path);
       Error("Can't find module name for path " ++ path)
     | Some(x) => Ok(x)
   };
-  let includes = state.settings.crossFileAsYouType
-  ? [package.tmpPath, ...package.includeDirectories]
-  : package.includeDirectories;
+  let includes = package.includeDirectories;
   let%try refmtPath = refmtForUri(uri, package);
   AsYouType.getInterface(
     ~moduleName,
     ~basePath=package.basePath,
     ~reasonFormat=switch (package.buildSystem) {
-      | Bsb(_) | BsbNative(_, Js) => Utils.endsWith(uri, "re") || Utils.endsWith(uri, "rei")
-      | _ => false
+      | Bsb(_) => Utils.endsWith(uri, "re") || Utils.endsWith(uri, "rei")
     },
     text,
     ~cacheLocation=package.tmpPath,
@@ -259,7 +200,7 @@ let getCompilationResult = (uri, state, ~package: TopTypes.package) => {
       let path = Utils.parseUri(uri) |! "not a uri: " ++ uri;
       Files.readFileExn(path)
     };
-    let moduleName = BuildSystem.namespacedName(package.buildSystem, package.namespace, FindFiles.getName(path));
+    let moduleName = BuildSystem.namespacedName(package.namespace, FindFiles.getName(path));
     /* let%try moduleName = switch (Utils.maybeHash(package.nameForPath, path)) {
       | None =>
         Hashtbl.iter((k, v) => Log.log("Path: " ++ k ++ "  " ++ v), package.nameForPath);
@@ -267,9 +208,7 @@ let getCompilationResult = (uri, state, ~package: TopTypes.package) => {
         Error("Can't find module name for path " ++ path)
       | Some(x) => Ok(x)
     }; */
-    let includes = state.settings.crossFileAsYouType
-    ? [package.tmpPath, ...package.includeDirectories]
-    : package.includeDirectories;
+    let includes = package.includeDirectories;
     let%try refmtPath = refmtForUri(uri, package);
     let%try result = AsYouType.process(
       ~compilerVersion=package.compilerVersion,
@@ -277,10 +216,7 @@ let getCompilationResult = (uri, state, ~package: TopTypes.package) => {
       ~moduleName,
       ~allLocations=state.settings.recordAllLocations,
       ~basePath=package.basePath,
-      ~reasonFormat=switch (package.buildSystem) {
-        | Bsb(_) | BsbNative(_, Js) => Utils.endsWith(uri, "re") || Utils.endsWith(uri, "rei")
-        | _ => false
-      },
+      ~reasonFormat=Utils.endsWith(uri, "re") || Utils.endsWith(uri, "rei"),
       text,
       ~cacheLocation=package.tmpPath,
       package.compilerPath,
@@ -302,45 +238,8 @@ let getCompilationResult = (uri, state, ~package: TopTypes.package) => {
 
       Hashtbl.replace(state.lastDefinitions, uri, full);
       Hashtbl.replace(package.interModuleDependencies, moduleName, SharedTypes.hashList(full.extra.externalReferences) |. Belt.List.map(fst));
-
-      if (state.settings.crossFileAsYouType) {
-        /** Check dependencies */
-        package.localModules |. Belt.List.forEach((mname) => {
-          let%opt_consume paths = Utils.maybeHash(package.pathsForModule, mname);
-          let%opt_consume src = SharedTypes.getSrc(paths);
-          let otherUri = Utils.toUri(src);
-          if (mname != moduleName
-              && List.mem(
-                   moduleName,
-                   Query.hashFind(package.interModuleDependencies, mname) |? [],
-                 )) {
-            Hashtbl.remove(state.compiledDocuments, otherUri);
-            Hashtbl.replace(
-              state.documentTimers,
-              otherUri,
-              Unix.gettimeofday() +. 0.01,
-            );
-          };
-        });
-
-        package.localModules |. Belt.List.forEach((mname) => {
-          let%opt_consume paths = Utils.maybeHash(package.pathsForModule, mname);
-          let%opt_consume src = SharedTypes.getSrc(paths);
-          let otherUri = Utils.toUri(src);
-          switch (Hashtbl.find(state.compiledDocuments, otherUri)) {
-            | exception Not_found => ()
-            | TypeError(_, {extra}) | Success(_, {extra}) => {
-              if (Hashtbl.mem(extra.externalReferences, moduleName)) {
-                Hashtbl.remove(state.compiledDocuments, otherUri);
-                Hashtbl.replace(state.documentTimers, otherUri, Unix.gettimeofday() +. 0.01);
-              }
-            }
-            | _ => ()
-          }
-        });
       }
     }
-    };
     Ok(result)
   }
 };
@@ -365,10 +264,6 @@ let getBestDefinitions = (uri, state, ~package) => {
   }
 };
 
-let getDefinitionData = (uri, state, ~package) => {
-  getCompilationResult(uri, state, ~package) |> tryExtra
-};
-
 let docsForModule = (modname, state, ~package) =>
     if (Hashtbl.mem(package.pathsForModule, modname)) {
       let paths = Hashtbl.find(package.pathsForModule, modname);
@@ -390,26 +285,8 @@ let fileForUri = (state,  ~package, uri) => {
 };
 
 let fileForModule = (state,  ~package, modname) => {
-  let file = state.settings.crossFileAsYouType ? {
-    /* Log.log("✅ Gilr got mofilr " ++ modname); */
-    Log.log(package.localModules |> String.concat(" "));
-    let%opt paths = Utils.maybeHash(package.pathsForModule, modname);
-    /* TODO do better? */
-    let%opt src = SharedTypes.getSrc(paths);
-    let uri = Utils.toUri(src);
-    if (Hashtbl.mem(state.documentText, uri)) {
-      let%opt {SharedTypes.file} = tryExtra(getCompilationResult(uri, state, ~package)) |> RResult.toOptionAndLog;
-      Some(file)
-    } else {
-      None
-    }
-  } : None;
-  switch file {
-    | Some(_) => file
-    | None =>
-      let%opt (file, _) = docsForModule(modname, state, ~package);
-      Some(file)
-  }
+  let%opt (file, _) = docsForModule(modname, state, ~package);
+  Some(file)
 };
 
 let extraForModule = (state, ~package, modname) => {

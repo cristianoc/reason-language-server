@@ -44,11 +44,9 @@ type settings = {
   opensCodelens: bool,
   dependenciesCodelens: bool,
   clientNeedsPlainText: bool,
-  crossFileAsYouType: bool,
   showModulePathOnHover: bool,
   recordAllLocations: bool,
   autoRebuild: bool,
-  buildSystemOverrideByRoot: list((string, BuildSystem.t))
 };
 
 type state = {
@@ -87,7 +85,6 @@ let empty = () => {
     mlfmtLocation: None,
     refmtLocation: None,
     lispRefmtLocation: None,
-    crossFileAsYouType: false,
     perValueCodelens: false,
     opensCodelens: true,
     dependenciesCodelens: true,
@@ -95,7 +92,6 @@ let empty = () => {
     showModulePathOnHover: true,
     recordAllLocations: false,
     autoRebuild: true,
-    buildSystemOverrideByRoot: [],
   },
 };
 
